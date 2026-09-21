@@ -1,3 +1,4 @@
+import json
 import streamlit as st
 from ollama import chat
 
@@ -23,19 +24,6 @@ error = st.text_area(
     placeholder="Example: Invalid department reference"
 )
 
-
-def get_section(text, start_marker, end_marker=None):
-    if start_marker not in text:
-        return "No information returned."
-
-    section = text.split(start_marker, 1)[1]
-
-    if end_marker and end_marker in section:
-        section = section.split(end_marker, 1)[0]
-
-    return section.strip()
-
-
 if st.button("Analyze Error", type="primary"):
 
     if error.strip() == "":
@@ -46,25 +34,28 @@ if st.button("Analyze Error", type="primary"):
         prompt = f"""
 You are an experienced {erp_system} support analyst.
 
-The user received this error:
+Analyze this ERP error:
 
 {error}
 
-Respond using exactly these headings:
+Return ONLY valid JSON using exactly this structure:
 
-ERROR MEANING:
-Explain what the error means.
+{{
+    "error_meaning": "Short explanation of what the error means",
+    "possible_causes": [
+        "Cause 1",
+        "Cause 2",
+        "Cause 3"
+    ],
+    "what_to_check": [
+        "Check 1",
+        "Check 2",
+        "Check 3"
+    ],
+    "suggested_resolution": "Practical recommended resolution"
+}}
 
-POSSIBLE CAUSES:
-List the likely causes.
-
-WHAT TO CHECK:
-Give practical troubleshooting steps.
-
-SUGGESTED RESOLUTION:
-Explain how the issue could be resolved.
-
-Keep the answer practical and concise.
+Do not include any text outside the JSON.
 Do not invent system-specific facts if you are unsure.
 """
 
@@ -77,44 +68,32 @@ Do not invent system-specific facts if you are unsure.
                         "role": "user",
                         "content": prompt
                     }
-                ]
+                ],
+                format="json"
             )
 
-        answer = response.message.content
+        try:
 
-        error_meaning = get_section(
-            answer,
-            "ERROR MEANING:",
-            "POSSIBLE CAUSES:"
-        )
+            data = json.loads(response.message.content)
 
-        possible_causes = get_section(
-            answer,
-            "POSSIBLE CAUSES:",
-            "WHAT TO CHECK:"
-        )
+            st.success("Analysis complete")
 
-        what_to_check = get_section(
-            answer,
-            "WHAT TO CHECK:",
-            "SUGGESTED RESOLUTION:"
-        )
+            st.subheader("Error Meaning")
+            st.info(data["error_meaning"])
 
-        suggested_resolution = get_section(
-            answer,
-            "SUGGESTED RESOLUTION:"
-        )
+            st.subheader("Possible Causes")
 
-        st.success("Analysis complete")
+            for cause in data["possible_causes"]:
+                st.write(f"• {cause}")
 
-        st.subheader("Error Meaning")
-        st.info(error_meaning)
+            st.subheader("What to Check")
 
-        st.subheader("Possible Causes")
-        st.warning(possible_causes)
+            for check in data["what_to_check"]:
+                st.write(f"• {check}")
 
-        st.subheader("What to Check")
-        st.info(what_to_check)
+            st.subheader("Suggested Resolution")
+            st.success(data["suggested_resolution"])
 
-        st.subheader("Suggested Resolution")
-        st.success(suggested_resolution)
+        except json.JSONDecodeError:
+
+            st.error("The AI returned an invalid response. Please try again.")
