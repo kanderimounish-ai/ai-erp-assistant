@@ -1,6 +1,12 @@
 import json
+import sqlite3
 import streamlit as st
 from ollama import chat
+
+
+# -----------------------------
+# Page Configuration
+# -----------------------------
 
 st.set_page_config(
     page_title="AI ERP Error Assistant",
@@ -8,10 +14,40 @@ st.set_page_config(
     layout="centered"
 )
 
+
+# -----------------------------
+# Database Setup
+# -----------------------------
+
+connection = sqlite3.connect("erp_history.db")
+
+cursor = connection.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    erp_system TEXT,
+    error TEXT,
+    error_meaning TEXT,
+    possible_causes TEXT,
+    what_to_check TEXT,
+    suggested_resolution TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+connection.commit()
+
+
+# -----------------------------
+# App UI
+# -----------------------------
+
 st.title("🤖 AI ERP Error Assistant")
 
 st.write(
-    "Select your ERP system, paste the error, and AI will help troubleshoot it."
+    "Select your ERP system, paste the error, "
+    "and AI will help troubleshoot it."
 )
 
 erp_system = st.selectbox(
@@ -23,6 +59,11 @@ error = st.text_area(
     "ERP Error",
     placeholder="Example: Invalid department reference"
 )
+
+
+# -----------------------------
+# Analyze Button
+# -----------------------------
 
 if st.button("Analyze Error", type="primary"):
 
@@ -41,7 +82,7 @@ Analyze this ERP error:
 Return ONLY valid JSON using exactly this structure:
 
 {{
-    "error_meaning": "Short explanation of what the error means",
+    "error_meaning": "Short explanation",
     "possible_causes": [
         "Cause 1",
         "Cause 2",
@@ -52,10 +93,11 @@ Return ONLY valid JSON using exactly this structure:
         "Check 2",
         "Check 3"
     ],
-    "suggested_resolution": "Practical recommended resolution"
+    "suggested_resolution": "Practical resolution"
 }}
 
-Do not include any text outside the JSON.
+Do not include any text outside JSON.
+
 Do not invent system-specific facts if you are unsure.
 """
 
@@ -75,6 +117,38 @@ Do not invent system-specific facts if you are unsure.
         try:
 
             data = json.loads(response.message.content)
+
+            # -----------------------------
+            # Save Result to Database
+            # -----------------------------
+
+            cursor.execute(
+                """
+                INSERT INTO history (
+                    erp_system,
+                    error,
+                    error_meaning,
+                    possible_causes,
+                    what_to_check,
+                    suggested_resolution
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    erp_system,
+                    error,
+                    data["error_meaning"],
+                    json.dumps(data["possible_causes"]),
+                    json.dumps(data["what_to_check"]),
+                    data["suggested_resolution"]
+                )
+            )
+
+            connection.commit()
+
+            # -----------------------------
+            # Display Result
+            # -----------------------------
 
             st.success("Analysis complete")
 
@@ -96,4 +170,44 @@ Do not invent system-specific facts if you are unsure.
 
         except json.JSONDecodeError:
 
-            st.error("The AI returned an invalid response. Please try again.")
+            st.error(
+                "AI returned an invalid JSON response. "
+                "Please try again."
+            )
+
+
+# -----------------------------
+# History
+# -----------------------------
+
+st.divider()
+
+st.subheader("Recent Analyses")
+
+cursor.execute("""
+SELECT
+    erp_system,
+    error,
+    created_at
+FROM history
+ORDER BY id DESC
+LIMIT 5
+""")
+
+history = cursor.fetchall()
+
+if history:
+
+    for item in history:
+
+        st.write(
+            f"**{item[0]}** — {item[1]}  \n"
+            f"{item[2]}"
+        )
+
+else:
+
+    st.write("No analysis history yet.")
+
+
+connection.close()
