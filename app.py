@@ -1,7 +1,7 @@
 import json
 import sqlite3
 import streamlit as st
-from ollama import chat
+from ollama import chat, embed
 
 
 # =========================================================
@@ -19,46 +19,94 @@ st.set_page_config(
 # RAG - RETRIEVE KNOWLEDGE
 # =========================================================
 
+def cosine_similarity(vector1, vector2):
+
+    dot_product = sum(
+        a * b
+        for a, b in zip(vector1, vector2)
+    )
+
+    magnitude1 = sum(
+        a * a
+        for a in vector1
+    ) ** 0.5
+
+    magnitude2 = sum(
+        b * b
+        for b in vector2
+    ) ** 0.5
+
+    if magnitude1 == 0 or magnitude2 == 0:
+        return 0
+
+    return dot_product / (
+        magnitude1 * magnitude2
+    )
+
+
 def retrieve_knowledge(erp_system, user_error):
 
     file_name = f"knowledge_base/{erp_system.lower()}.txt"
 
     try:
-        with open(file_name, "r", encoding="utf-8") as file:
+
+        with open(
+            file_name,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
             content = file.read()
 
     except FileNotFoundError:
+
         return ""
 
-    # Split documentation into paragraphs
-    paragraphs = content.split("\n\n")
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in content.split("\n\n")
+        if paragraph.strip()
+    ]
 
-    # Convert user error into individual words
-    error_words = set(user_error.lower().split())
+    # Convert user error into embedding
+    query_response = embed(
+        model="nomic-embed-text",
+        input=user_error
+    )
+
+    query_vector = query_response["embeddings"][0]
 
     scored_paragraphs = []
 
     for paragraph in paragraphs:
 
-        paragraph_words = set(paragraph.lower().split())
-
-        # Find matching words
-        score = len(
-            error_words.intersection(paragraph_words)
+        paragraph_response = embed(
+            model="nomic-embed-text",
+            input=paragraph
         )
 
-        if score > 0:
-            scored_paragraphs.append(
-                (score, paragraph)
-            )
+        paragraph_vector = (
+            paragraph_response["embeddings"][0]
+        )
 
-    # Highest matching paragraphs first
+        similarity = cosine_similarity(
+            query_vector,
+            paragraph_vector
+        )
+
+        scored_paragraphs.append(
+            (
+                similarity,
+                paragraph
+            )
+        )
+
+    # Highest semantic similarity first
     scored_paragraphs.sort(
         key=lambda item: item[0],
         reverse=True
     )
 
-    # Take top 3 relevant paragraphs
     top_results = scored_paragraphs[:3]
 
     retrieved_text = "\n\n".join(
@@ -67,7 +115,6 @@ def retrieve_knowledge(erp_system, user_error):
     )
 
     return retrieved_text
-
 
 # =========================================================
 # DATABASE SETUP
