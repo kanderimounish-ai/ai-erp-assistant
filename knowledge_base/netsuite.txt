@@ -1,0 +1,15 @@
+NetSuite Department Reference Errors
+
+An invalid department reference may occur when a department value supplied to a transaction does not match an active department record in NetSuite.
+
+Common causes include an incorrect department internal ID, an inactive department, a department that is restricted for the selected subsidiary, or an incorrect mapping from an integration or CSV import.
+
+When troubleshooting, verify the department record in NetSuite and confirm that the department is active.
+
+Check whether the transaction subsidiary is allowed to use the selected department.
+
+For CSV imports and integrations, verify whether the source system is sending the department name or internal ID expected by the NetSuite mapping.
+
+If an integration recently changed, compare the source department value with the corresponding NetSuite department record.
+
+Correct the department mapping or transaction value and retry the transaction after validating the correct record.
