@@ -179,6 +179,9 @@ Do not invent system-specific facts if you are unsure.
 # -----------------------------
 # History
 # -----------------------------
+# -----------------------------
+# History
+# -----------------------------
 
 st.divider()
 
@@ -186,8 +189,13 @@ st.subheader("Recent Analyses")
 
 cursor.execute("""
 SELECT
+    id,
     erp_system,
     error,
+    error_meaning,
+    possible_causes,
+    what_to_check,
+    suggested_resolution,
     created_at
 FROM history
 ORDER BY id DESC
@@ -200,10 +208,38 @@ if history:
 
     for item in history:
 
-        st.write(
-            f"**{item[0]}** — {item[1]}  \n"
-            f"{item[2]}"
-        )
+        record_id = item[0]
+        record_erp = item[1]
+        record_error = item[2]
+        record_meaning = item[3]
+        record_causes = json.loads(item[4])
+        record_checks = json.loads(item[5])
+        record_resolution = item[6]
+        record_created_at = item[7]
+
+        with st.expander(
+            f"{record_erp} — {record_error}"
+        ):
+
+            st.caption(
+                f"Analysis ID: {record_id} | {record_created_at}"
+            )
+
+            st.markdown("### Error Meaning")
+            st.write(record_meaning)
+
+            st.markdown("### Possible Causes")
+
+            for cause in record_causes:
+                st.write(f"• {cause}")
+
+            st.markdown("### What to Check")
+
+            for check in record_checks:
+                st.write(f"• {check}")
+
+            st.markdown("### Suggested Resolution")
+            st.write(record_resolution)
 
 else:
 
