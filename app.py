@@ -1,12 +1,19 @@
 import json
-import sqlite3
 import streamlit as st
-from ollama import chat, embed
+
+from rag import retrieve_knowledge
+from llm import analyze_error
+
+from database import (
+    initialize_database,
+    save_analysis,
+    get_recent_analyses
+)
 
 
-# =========================================================
-# PAGE CONFIGURATION
-# =========================================================
+# ==========================================
+# SETUP
+# ==========================================
 
 st.set_page_config(
     page_title="AI ERP Error Assistant",
@@ -14,147 +21,24 @@ st.set_page_config(
     layout="centered"
 )
 
-
-# =========================================================
-# RAG - RETRIEVE KNOWLEDGE
-# =========================================================
-
-def cosine_similarity(vector1, vector2):
-
-    dot_product = sum(
-        a * b
-        for a, b in zip(vector1, vector2)
-    )
-
-    magnitude1 = sum(
-        a * a
-        for a in vector1
-    ) ** 0.5
-
-    magnitude2 = sum(
-        b * b
-        for b in vector2
-    ) ** 0.5
-
-    if magnitude1 == 0 or magnitude2 == 0:
-        return 0
-
-    return dot_product / (
-        magnitude1 * magnitude2
-    )
+initialize_database()
 
 
-def retrieve_knowledge(erp_system, user_error):
-
-    file_name = f"knowledge_base/{erp_system.lower()}.txt"
-
-    try:
-
-        with open(
-            file_name,
-            "r",
-            encoding="utf-8"
-        ) as file:
-
-            content = file.read()
-
-    except FileNotFoundError:
-
-        return ""
-
-    paragraphs = [
-        paragraph.strip()
-        for paragraph in content.split("\n\n")
-        if paragraph.strip()
-    ]
-
-    # Convert user error into embedding
-    query_response = embed(
-        model="nomic-embed-text",
-        input=user_error
-    )
-
-    query_vector = query_response["embeddings"][0]
-
-    scored_paragraphs = []
-
-    for paragraph in paragraphs:
-
-        paragraph_response = embed(
-            model="nomic-embed-text",
-            input=paragraph
-        )
-
-        paragraph_vector = (
-            paragraph_response["embeddings"][0]
-        )
-
-        similarity = cosine_similarity(
-            query_vector,
-            paragraph_vector
-        )
-
-        scored_paragraphs.append(
-            (
-                similarity,
-                paragraph
-            )
-        )
-
-    # Highest semantic similarity first
-    scored_paragraphs.sort(
-        key=lambda item: item[0],
-        reverse=True
-    )
-
-    top_results = scored_paragraphs[:3]
-
-    retrieved_text = "\n\n".join(
-        paragraph
-        for score, paragraph in top_results
-    )
-
-    return retrieved_text
-
-# =========================================================
-# DATABASE SETUP
-# =========================================================
-
-connection = sqlite3.connect("erp_history.db")
-
-cursor = connection.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    erp_system TEXT,
-    error TEXT,
-    error_meaning TEXT,
-    possible_causes TEXT,
-    what_to_check TEXT,
-    suggested_resolution TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-
-connection.commit()
-
-
-# =========================================================
-# APP HEADER
-# =========================================================
+# ==========================================
+# HEADER
+# ==========================================
 
 st.title("🤖 AI ERP Error Assistant")
 
 st.write(
     "Select your ERP system, paste an error, "
-    "and AI will help explain and troubleshoot it."
+    "and AI will help troubleshoot it."
 )
 
 
-# =========================================================
-# ERP SYSTEM SELECTION
-# =========================================================
+# ==========================================
+# INPUT
+# ==========================================
 
 erp_system = st.selectbox(
     "Select ERP System",
@@ -166,28 +50,25 @@ erp_system = st.selectbox(
     ]
 )
 
-
-# =========================================================
-# ERROR INPUT
-# =========================================================
-
 error = st.text_area(
     "ERP Error",
-    placeholder="Example: Invalid department reference",
+    placeholder=(
+        "Example: Invalid department reference"
+    ),
     height=120
 )
 
 
-# =========================================================
-# ANALYZE BUTTON
-# =========================================================
+# ==========================================
+# ANALYSIS
+# ==========================================
 
 if st.button(
     "Analyze Error",
     type="primary"
 ):
 
-    if error.strip() == "":
+    if not error.strip():
 
         st.warning(
             "Please enter an ERP error."
@@ -195,175 +76,52 @@ if st.button(
 
     else:
 
-        # ---------------------------------------------
-        # Retrieve relevant documentation
-        # ---------------------------------------------
-
-        retrieved_knowledge = retrieve_knowledge(
-            erp_system,
-            error
-        )
-
-        # ---------------------------------------------
-        # Build AI prompt
-        # ---------------------------------------------
-
-        prompt = f"""
-You are an experienced {erp_system} ERP support analyst.
-
-The user received this ERP error:
-
-{error}
-
-
-RELEVANT DOCUMENTATION FROM THE LOCAL KNOWLEDGE BASE:
-
-{retrieved_knowledge}
-
-
-INSTRUCTIONS:
-
-Use the documentation above when it is relevant.
-
-If the documentation does not contain enough information,
-you may use general ERP knowledge.
-
-Do not invent system-specific facts if you are unsure.
-
-Return ONLY valid JSON.
-
-Use exactly this JSON structure:
-
-{{
-    "error_meaning": "Short and clear explanation of the error",
-
-    "possible_causes": [
-        "Cause 1",
-        "Cause 2",
-        "Cause 3"
-    ],
-
-    "what_to_check": [
-        "Check 1",
-        "Check 2",
-        "Check 3"
-    ],
-
-    "suggested_resolution":
-        "Practical recommendation for resolving the issue"
-}}
-
-Do not return markdown.
-
-Do not return text before or after the JSON.
-"""
-
-        # ---------------------------------------------
-        # Call Local Ollama AI
-        # ---------------------------------------------
-
         try:
+
+            with st.spinner(
+                "Searching ERP knowledge..."
+            ):
+
+                retrieved_knowledge = (
+                    retrieve_knowledge(
+                        erp_system,
+                        error
+                    )
+                )
+
 
             with st.spinner(
                 "Analyzing ERP error..."
             ):
 
-                response = chat(
-                    model="llama3.2:3b",
-
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-
-                    format="json"
-                )
-
-            # ---------------------------------------------
-            # Convert AI JSON into Python dictionary
-            # ---------------------------------------------
-
-            data = json.loads(
-                response.message.content
-            )
-
-            # ---------------------------------------------
-            # Read individual fields
-            # ---------------------------------------------
-
-            error_meaning = data.get(
-                "error_meaning",
-                "No explanation returned."
-            )
-
-            possible_causes = data.get(
-                "possible_causes",
-                []
-            )
-
-            what_to_check = data.get(
-                "what_to_check",
-                []
-            )
-
-            suggested_resolution = data.get(
-                "suggested_resolution",
-                "No resolution returned."
-            )
-
-            # ---------------------------------------------
-            # Save analysis into database
-            # ---------------------------------------------
-
-            cursor.execute(
-                """
-                INSERT INTO history (
+                data = analyze_error(
                     erp_system,
                     error,
-                    error_meaning,
-                    possible_causes,
-                    what_to_check,
-                    suggested_resolution
+                    retrieved_knowledge
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    erp_system,
 
-                    error,
 
-                    error_meaning,
-
-                    json.dumps(
-                        possible_causes
-                    ),
-
-                    json.dumps(
-                        what_to_check
-                    ),
-
-                    suggested_resolution
-                )
+            save_analysis(
+                erp_system,
+                error,
+                data
             )
 
-            connection.commit()
-
-            # ---------------------------------------------
-            # Display AI Result
-            # ---------------------------------------------
 
             st.success(
                 "Analysis complete"
             )
+
 
             st.subheader(
                 "Error Meaning"
             )
 
             st.info(
-                error_meaning
+                data.get(
+                    "error_meaning",
+                    "No explanation returned."
+                )
             )
 
 
@@ -371,18 +129,13 @@ Do not return text before or after the JSON.
                 "Possible Causes"
             )
 
-            if possible_causes:
-
-                for cause in possible_causes:
-
-                    st.write(
-                        f"• {cause}"
-                    )
-
-            else:
+            for cause in data.get(
+                "possible_causes",
+                []
+            ):
 
                 st.write(
-                    "No possible causes returned."
+                    f"• {cause}"
                 )
 
 
@@ -390,18 +143,13 @@ Do not return text before or after the JSON.
                 "What to Check"
             )
 
-            if what_to_check:
-
-                for check in what_to_check:
-
-                    st.write(
-                        f"• {check}"
-                    )
-
-            else:
+            for check in data.get(
+                "what_to_check",
+                []
+            ):
 
                 st.write(
-                    "No troubleshooting checks returned."
+                    f"• {check}"
                 )
 
 
@@ -410,13 +158,12 @@ Do not return text before or after the JSON.
             )
 
             st.success(
-                suggested_resolution
+                data.get(
+                    "suggested_resolution",
+                    "No resolution returned."
+                )
             )
 
-
-            # ---------------------------------------------
-            # Show retrieved RAG knowledge
-            # ---------------------------------------------
 
             with st.expander(
                 "Retrieved Knowledge"
@@ -431,16 +178,15 @@ Do not return text before or after the JSON.
                 else:
 
                     st.write(
-                        "No matching documentation was found "
-                        "in the local knowledge base."
+                        "No relevant local "
+                        "documentation found."
                     )
 
 
         except json.JSONDecodeError:
 
             st.error(
-                "The AI returned an invalid JSON response. "
-                "Please try again."
+                "The AI returned invalid JSON."
             )
 
 
@@ -451,9 +197,9 @@ Do not return text before or after the JSON.
             )
 
 
-# =========================================================
-# HISTORY SECTION
-# =========================================================
+# ==========================================
+# HISTORY
+# ==========================================
 
 st.divider()
 
@@ -461,64 +207,41 @@ st.subheader(
     "Recent Analyses"
 )
 
-
-cursor.execute("""
-SELECT
-    id,
-    erp_system,
-    error,
-    error_meaning,
-    possible_causes,
-    what_to_check,
-    suggested_resolution,
-    created_at
-FROM history
-ORDER BY id DESC
-LIMIT 5
-""")
-
-
-history = cursor.fetchall()
+history = get_recent_analyses()
 
 
 if history:
 
     for item in history:
 
-        record_id = item[0]
-
-        record_erp = item[1]
-
-        record_error = item[2]
-
-        record_meaning = item[3]
-
-        record_created_at = item[7]
-
-
-        try:
-
-            record_causes = json.loads(
-                item[4]
-            )
-
-        except Exception:
-
-            record_causes = []
+        (
+            record_id,
+            record_erp,
+            record_error,
+            record_meaning,
+            causes_json,
+            checks_json,
+            record_resolution,
+            created_at
+        ) = item
 
 
         try:
-
-            record_checks = json.loads(
-                item[5]
+            causes = json.loads(
+                causes_json
             )
 
         except Exception:
+            causes = []
 
-            record_checks = []
 
+        try:
+            checks = json.loads(
+                checks_json
+            )
 
-        record_resolution = item[6]
+        except Exception:
+            checks = []
 
 
         with st.expander(
@@ -527,9 +250,8 @@ if history:
 
             st.caption(
                 f"Analysis ID: {record_id} | "
-                f"{record_created_at}"
+                f"{created_at}"
             )
-
 
             st.markdown(
                 "### Error Meaning"
@@ -544,7 +266,7 @@ if history:
                 "### Possible Causes"
             )
 
-            for cause in record_causes:
+            for cause in causes:
 
                 st.write(
                     f"• {cause}"
@@ -555,7 +277,7 @@ if history:
                 "### What to Check"
             )
 
-            for check in record_checks:
+            for check in checks:
 
                 st.write(
                     f"• {check}"
@@ -576,10 +298,3 @@ else:
     st.write(
         "No analysis history yet."
     )
-
-
-# =========================================================
-# CLOSE DATABASE CONNECTION
-# =========================================================
-
-connection.close()
