@@ -3,7 +3,7 @@ import streamlit as st
 
 from rag import (
     retrieve_knowledge,
-    retrieve_uploaded_knowledge
+    retrieve_multiple_documents
 )
 
 from llm import analyze_error
@@ -32,13 +32,11 @@ initialize_database()
 # HEADER
 # =========================================================
 
-st.title(
-    "🤖 AI ERP Error Assistant"
-)
+st.title("🤖 AI ERP Error Assistant")
 
 st.write(
-    "Select your ERP system, upload optional documentation, "
-    "paste an ERP error, and AI will help troubleshoot it."
+    "Upload ERP documentation, paste an error, "
+    "and AI will search the documents and help troubleshoot it."
 )
 
 
@@ -61,17 +59,41 @@ erp_system = st.selectbox(
 # DOCUMENT UPLOAD
 # =========================================================
 
-uploaded_file = st.file_uploader(
+uploaded_files = st.file_uploader(
     "Upload ERP documentation (optional)",
-    type=[
-        "txt",
-        "pdf"
-    ]
+    type=["txt", "pdf"],
+    accept_multiple_files=True,
+    key="erp_documents"
 )
 
-if uploaded_file:
+
+# =========================================================
+# KNOWLEDGE MODE
+# =========================================================
+
+if uploaded_files:
+
     st.success(
-        f"Document loaded: {uploaded_file.name}"
+        f"{len(uploaded_files)} document(s) loaded"
+    )
+
+    st.info(
+        "Knowledge Mode: Uploaded Documents"
+    )
+
+    with st.expander(
+        "Uploaded Documents"
+    ):
+        for uploaded_file in uploaded_files:
+
+            st.write(
+                f"• {uploaded_file.name}"
+            )
+
+else:
+
+    st.info(
+        f"Knowledge Mode: Local {erp_system} Knowledge Base"
     )
 
 
@@ -82,7 +104,8 @@ if uploaded_file:
 error = st.text_area(
     "ERP Error",
     placeholder=(
-        "Example: Invalid department reference"
+        "Example: Vendor creation failed "
+        "because company name already exists"
     ),
     height=120
 )
@@ -96,12 +119,15 @@ if st.button(
     "Analyze Error",
     type="primary"
 ):
+
     if not error.strip():
+
         st.warning(
             "Please enter an ERP error."
         )
 
     else:
+
         try:
 
             # =========================================
@@ -112,27 +138,53 @@ if st.button(
                 "Searching ERP documentation..."
             ):
 
-                if uploaded_file:
-                    file_bytes = (
-                        uploaded_file.getvalue()
-                    )
+                # -------------------------------------
+                # MODE 1: UPLOADED DOCUMENTS
+                # -------------------------------------
 
-                    file_type = (
-                        uploaded_file.name
-                        .rsplit(".", 1)[-1]
-                        .lower()
-                    )
+                if len(uploaded_files) > 0:
+
+                    documents = []
+
+                    for uploaded_file in uploaded_files:
+
+                        file_type = (
+                            uploaded_file.name
+                            .rsplit(".", 1)[-1]
+                            .lower()
+                        )
+
+                        documents.append(
+                            {
+                                "name":
+                                    uploaded_file.name,
+
+                                "type":
+                                    file_type,
+
+                                "bytes":
+                                    uploaded_file.getvalue()
+                            }
+                        )
 
                     retrieval_result = (
-                        retrieve_uploaded_knowledge(
-                            file_bytes,
-                            file_type,
-                            uploaded_file.name,
+                        retrieve_multiple_documents(
+                            documents,
                             error
                         )
                     )
 
+                    retrieval_mode = (
+                        "Uploaded Documents"
+                    )
+
+
+                # -------------------------------------
+                # MODE 2: LOCAL KNOWLEDGE BASE
+                # -------------------------------------
+
                 else:
+
                     retrieval_result = (
                         retrieve_knowledge(
                             erp_system,
@@ -140,12 +192,41 @@ if st.button(
                         )
                     )
 
+                    retrieval_mode = (
+                        f"Local {erp_system} Knowledge Base"
+                    )
+
+
                 retrieved_knowledge = (
-                    retrieval_result["context"]
+                    retrieval_result.get(
+                        "context",
+                        ""
+                    )
                 )
 
                 retrieved_sources = (
-                    retrieval_result["sources"]
+                    retrieval_result.get(
+                        "sources",
+                        []
+                    )
+                )
+
+
+            # =========================================
+            # IMPORTANT:
+            # DO NOT SILENTLY FALL BACK
+            # =========================================
+
+            if (
+                uploaded_files
+                and not retrieved_sources
+            ):
+
+                st.warning(
+                    "The uploaded documents did not contain "
+                    "a sufficiently relevant match. "
+                    "The app will not silently use the local "
+                    "knowledge base instead."
                 )
 
 
@@ -156,6 +237,7 @@ if st.button(
             with st.spinner(
                 "Analyzing ERP error..."
             ):
+
                 data = analyze_error(
                     erp_system,
                     error,
@@ -164,7 +246,7 @@ if st.button(
 
 
             # =========================================
-            # SAVE HISTORY
+            # SAVE
             # =========================================
 
             save_analysis(
@@ -175,11 +257,15 @@ if st.button(
 
 
             # =========================================
-            # DISPLAY ANSWER
+            # ANSWER
             # =========================================
 
             st.success(
                 "Analysis complete"
+            )
+
+            st.caption(
+                f"Knowledge source mode: {retrieval_mode}"
             )
 
 
@@ -205,12 +291,15 @@ if st.button(
             )
 
             if possible_causes:
+
                 for cause in possible_causes:
+
                     st.write(
                         f"• {cause}"
                     )
 
             else:
+
                 st.write(
                     "No possible causes returned."
                 )
@@ -226,12 +315,15 @@ if st.button(
             )
 
             if checks:
+
                 for check in checks:
+
                     st.write(
                         f"• {check}"
                     )
 
             else:
+
                 st.write(
                     "No troubleshooting checks returned."
                 )
@@ -250,7 +342,7 @@ if st.button(
 
 
             # =========================================
-            # SOURCE CITATIONS
+            # SOURCES
             # =========================================
 
             st.subheader(
@@ -258,31 +350,42 @@ if st.button(
             )
 
             if retrieved_sources:
+
                 for source in retrieved_sources:
 
-                    source_text = (
+                    source_label = (
                         f"Source {source['number']}: "
                         f"{source['source']}"
                     )
 
                     if source["page"] is not None:
-                        source_text += (
+
+                        source_label += (
                             f" — Page {source['page']}"
                         )
 
                     st.write(
-                        f"**{source_text}**"
+                        f"**{source_label}**"
                     )
 
             else:
-                st.write(
-                    "No local documentation source was found. "
-                    "The response may rely on general model knowledge."
-                )
+
+                if uploaded_files:
+
+                    st.warning(
+                        "No sufficiently relevant source "
+                        "was found in the uploaded documents."
+                    )
+
+                else:
+
+                    st.write(
+                        "No relevant local source was found."
+                    )
 
 
             # =========================================
-            # RETRIEVED EVIDENCE
+            # EVIDENCE
             # =========================================
 
             with st.expander(
@@ -293,18 +396,19 @@ if st.button(
 
                     for source in retrieved_sources:
 
-                        source_title = (
+                        title = (
                             f"Source {source['number']} — "
                             f"{source['source']}"
                         )
 
                         if source["page"] is not None:
-                            source_title += (
+
+                            title += (
                                 f" — Page {source['page']}"
                             )
 
                         st.markdown(
-                            f"### {source_title}"
+                            f"### {title}"
                         )
 
                         st.write(
@@ -319,17 +423,21 @@ if st.button(
                         st.divider()
 
                 else:
+
                     st.write(
-                        "No relevant evidence retrieved."
+                        "No evidence retrieved."
                     )
 
 
         except json.JSONDecodeError:
+
             st.error(
                 "The AI returned invalid JSON."
             )
 
+
         except Exception as e:
+
             st.error(
                 f"Something went wrong: {e}"
             )
@@ -349,6 +457,7 @@ history = get_recent_analyses()
 
 
 if history:
+
     for item in history:
 
         (
@@ -364,20 +473,24 @@ if history:
 
 
         try:
+
             causes = json.loads(
                 causes_json
             )
 
         except Exception:
+
             causes = []
 
 
         try:
+
             checks = json.loads(
                 checks_json
             )
 
         except Exception:
+
             checks = []
 
 
@@ -405,6 +518,7 @@ if history:
             )
 
             for cause in causes:
+
                 st.write(
                     f"• {cause}"
                 )
@@ -415,6 +529,7 @@ if history:
             )
 
             for check in checks:
+
                 st.write(
                     f"• {check}"
                 )
@@ -429,6 +544,7 @@ if history:
             )
 
 else:
+
     st.write(
         "No analysis history yet."
     )
