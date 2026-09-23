@@ -1,7 +1,11 @@
 import json
 import streamlit as st
 
-from rag import retrieve_knowledge
+from rag import (
+    retrieve_knowledge,
+    retrieve_uploaded_knowledge
+)
+
 from llm import analyze_error
 
 from database import (
@@ -11,9 +15,9 @@ from database import (
 )
 
 
-# ==========================================
+# =========================================================
 # SETUP
-# ==========================================
+# =========================================================
 
 st.set_page_config(
     page_title="AI ERP Error Assistant",
@@ -24,11 +28,13 @@ st.set_page_config(
 initialize_database()
 
 
-# ==========================================
+# =========================================================
 # HEADER
-# ==========================================
+# =========================================================
 
-st.title("🤖 AI ERP Error Assistant")
+st.title(
+    "🤖 AI ERP Error Assistant"
+)
 
 st.write(
     "Select your ERP system, paste an error, "
@@ -36,9 +42,9 @@ st.write(
 )
 
 
-# ==========================================
-# INPUT
-# ==========================================
+# =========================================================
+# ERP SYSTEM
+# =========================================================
 
 erp_system = st.selectbox(
     "Select ERP System",
@@ -50,6 +56,27 @@ erp_system = st.selectbox(
     ]
 )
 
+
+# =========================================================
+# OPTIONAL DOCUMENT UPLOAD
+# =========================================================
+
+uploaded_file = st.file_uploader(
+    "Upload ERP documentation (optional)",
+    type=["txt"]
+)
+
+if uploaded_file:
+
+    st.success(
+        f"Document loaded: {uploaded_file.name}"
+    )
+
+
+# =========================================================
+# ERROR INPUT
+# =========================================================
+
 error = st.text_area(
     "ERP Error",
     placeholder=(
@@ -59,9 +86,9 @@ error = st.text_area(
 )
 
 
-# ==========================================
-# ANALYSIS
-# ==========================================
+# =========================================================
+# ANALYZE
+# =========================================================
 
 if st.button(
     "Analyze Error",
@@ -78,17 +105,48 @@ if st.button(
 
         try:
 
+            # -----------------------------------------
+            # RETRIEVAL
+            # -----------------------------------------
+
             with st.spinner(
                 "Searching ERP knowledge..."
             ):
 
-                retrieved_knowledge = (
-                    retrieve_knowledge(
-                        erp_system,
-                        error
-                    )
-                )
+                if uploaded_file:
 
+                    file_bytes = (
+                        uploaded_file.getvalue()
+                    )
+
+                    retrieved_knowledge = (
+                        retrieve_uploaded_knowledge(
+                            file_bytes,
+                            error
+                        )
+                    )
+
+                    knowledge_source = (
+                        uploaded_file.name
+                    )
+
+                else:
+
+                    retrieved_knowledge = (
+                        retrieve_knowledge(
+                            erp_system,
+                            error
+                        )
+                    )
+
+                    knowledge_source = (
+                        f"{erp_system} local knowledge base"
+                    )
+
+
+            # -----------------------------------------
+            # AI ANALYSIS
+            # -----------------------------------------
 
             with st.spinner(
                 "Analyzing ERP error..."
@@ -101,12 +159,20 @@ if st.button(
                 )
 
 
+            # -----------------------------------------
+            # SAVE RESULT
+            # -----------------------------------------
+
             save_analysis(
                 erp_system,
                 error,
                 data
             )
 
+
+            # -----------------------------------------
+            # DISPLAY
+            # -----------------------------------------
 
             st.success(
                 "Analysis complete"
@@ -165,9 +231,17 @@ if st.button(
             )
 
 
+            # -----------------------------------------
+            # RETRIEVED KNOWLEDGE
+            # -----------------------------------------
+
             with st.expander(
                 "Retrieved Knowledge"
             ):
+
+                st.caption(
+                    f"Source: {knowledge_source}"
+                )
 
                 if retrieved_knowledge:
 
@@ -178,8 +252,7 @@ if st.button(
                 else:
 
                     st.write(
-                        "No relevant local "
-                        "documentation found."
+                        "No relevant documentation found."
                     )
 
 
@@ -197,9 +270,9 @@ if st.button(
             )
 
 
-# ==========================================
+# =========================================================
 # HISTORY
-# ==========================================
+# =========================================================
 
 st.divider()
 
@@ -227,20 +300,24 @@ if history:
 
 
         try:
+
             causes = json.loads(
                 causes_json
             )
 
         except Exception:
+
             causes = []
 
 
         try:
+
             checks = json.loads(
                 checks_json
             )
 
         except Exception:
+
             checks = []
 
 
@@ -252,6 +329,7 @@ if history:
                 f"Analysis ID: {record_id} | "
                 f"{created_at}"
             )
+
 
             st.markdown(
                 "### Error Meaning"
