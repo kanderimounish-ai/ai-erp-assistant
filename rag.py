@@ -8,6 +8,11 @@ from pypdf import PdfReader
 
 EMBEDDING_MODEL = "nomic-embed-text"
 
+MIN_SIMILARITY = 0.45
+MAX_SCORE_GAP = 0.10
+MAX_CONTEXT_CHUNKS = 5
+MAX_UNIQUE_SOURCES = 3
+
 
 # =========================================================
 # COSINE SIMILARITY
@@ -38,7 +43,7 @@ def cosine_similarity(vector1, vector2):
 
 
 # =========================================================
-# TEXT CHUNKING
+# CHUNK TEXT
 # =========================================================
 
 def chunk_text(
@@ -128,9 +133,8 @@ def load_knowledge_embeddings(
     chunks = chunk_text(content)
 
     return create_embeddings(
-        chunks=chunks,
-        source_name=os.path.basename(file_name),
-        page_number=None
+        chunks,
+        os.path.basename(file_name)
     )
 
 
@@ -165,7 +169,7 @@ def retrieve_knowledge(
 
 
 # =========================================================
-# TXT FILE EXTRACTION
+# TXT EXTRACTION
 # =========================================================
 
 def extract_txt_document(
@@ -173,24 +177,23 @@ def extract_txt_document(
     source_name
 ):
     try:
-        content = file_bytes.decode(
+        text = file_bytes.decode(
             "utf-8"
         )
 
     except UnicodeDecodeError:
         return []
 
-    chunks = chunk_text(content)
+    chunks = chunk_text(text)
 
     return create_embeddings(
-        chunks=chunks,
-        source_name=source_name,
-        page_number=None
+        chunks,
+        source_name
     )
 
 
 # =========================================================
-# PDF FILE EXTRACTION
+# PDF EXTRACTION
 # =========================================================
 
 def extract_pdf_document(
@@ -205,7 +208,7 @@ def extract_pdf_document(
     except Exception:
         return []
 
-    all_chunks = []
+    document_chunks = []
 
     for page_index, page in enumerate(
         reader.pages
@@ -223,23 +226,21 @@ def extract_pdf_document(
             page_text
         )
 
-        page_embeddings = (
-            create_embeddings(
-                chunks=chunks,
-                source_name=source_name,
-                page_number=page_number
-            )
+        page_data = create_embeddings(
+            chunks,
+            source_name,
+            page_number
         )
 
-        all_chunks.extend(
-            page_embeddings
+        document_chunks.extend(
+            page_data
         )
 
-    return all_chunks
+    return document_chunks
 
 
 # =========================================================
-# UPLOADED DOCUMENT EMBEDDINGS
+# CACHE UPLOADED DOCUMENT
 # =========================================================
 
 @st.cache_data
@@ -263,22 +264,31 @@ def load_uploaded_embeddings(
     return []
 
 
-def retrieve_uploaded_knowledge(
-    file_bytes,
-    file_type,
-    source_name,
+# =========================================================
+# MULTIPLE DOCUMENT RETRIEVAL
+# =========================================================
+
+def retrieve_multiple_documents(
+    documents,
     user_error
 ):
-    document_data = (
-        load_uploaded_embeddings(
-            file_bytes,
-            file_type,
-            source_name
+    all_document_data = []
+
+    for document in documents:
+        document_data = (
+            load_uploaded_embeddings(
+                document["bytes"],
+                document["type"],
+                document["name"]
+            )
         )
-    )
+
+        all_document_data.extend(
+            document_data
+        )
 
     return search_embeddings(
-        document_data,
+        all_document_data,
         user_error
     )
 
@@ -297,6 +307,10 @@ def search_embeddings(
             "sources": []
         }
 
+    # -----------------------------------------------------
+    # Create embedding for user's query
+    # -----------------------------------------------------
+
     query_response = embed(
         model=EMBEDDING_MODEL,
         input=user_error
@@ -305,6 +319,11 @@ def search_embeddings(
     query_vector = (
         query_response["embeddings"][0]
     )
+
+
+    # -----------------------------------------------------
+    # Compare query against every document chunk
+    # -----------------------------------------------------
 
     results = []
 
@@ -323,18 +342,80 @@ def search_embeddings(
             }
         )
 
+
+    # -----------------------------------------------------
+    # Best results first
+    # -----------------------------------------------------
+
     results.sort(
         key=lambda item: item["similarity"],
         reverse=True
     )
 
-    top_results = results[:3]
+    if not results:
+        return {
+            "context": "",
+            "sources": []
+        }
+
+
+    # -----------------------------------------------------
+    # RELEVANCE FILTER
+    #
+    # Example:
+    #
+    # best result = 0.71
+    #
+    # MAX_SCORE_GAP = 0.10
+    #
+    # threshold = 0.61
+    #
+    # Results far below the best match are rejected.
+    # -----------------------------------------------------
+
+    best_score = results[0]["similarity"]
+
+    dynamic_threshold = max(
+        MIN_SIMILARITY,
+        best_score - MAX_SCORE_GAP
+    )
+
+    relevant_results = [
+        result
+        for result in results
+        if result["similarity"] >= dynamic_threshold
+    ]
+
+
+    # -----------------------------------------------------
+    # Limit number of chunks sent to LLM
+    # -----------------------------------------------------
+
+    relevant_results = (
+        relevant_results[
+            :MAX_CONTEXT_CHUNKS
+        ]
+    )
+
+
+    if not relevant_results:
+        return {
+            "context": "",
+            "sources": []
+        }
+
+
+    # -----------------------------------------------------
+    # BUILD AI CONTEXT
+    #
+    # Multiple chunks from the same document are okay here.
+    # AI benefits from having all relevant text.
+    # -----------------------------------------------------
 
     context_parts = []
-    sources = []
 
     for index, result in enumerate(
-        top_results,
+        relevant_results,
         start=1
     ):
         source_label = result["source"]
@@ -345,25 +426,65 @@ def search_embeddings(
             )
 
         context_parts.append(
-            f"[Source {index}: {source_label}]\n"
+            f"[Evidence {index}: {source_label}]\n"
             f"{result['text']}"
-        )
-
-        sources.append(
-            {
-                "number": index,
-                "source": result["source"],
-                "page": result["page"],
-                "similarity": result["similarity"],
-                "excerpt": result["text"]
-            }
         )
 
     context = "\n\n---\n\n".join(
         context_parts
     )
 
+
+    # -----------------------------------------------------
+    # DEDUPLICATE DISPLAY SOURCES
+    #
+    # Same PDF + same page should appear once in UI.
+    # -----------------------------------------------------
+
+    unique_sources = []
+
+    seen_sources = set()
+
+    for result in relevant_results:
+        source_key = (
+            result["source"],
+            result["page"]
+        )
+
+        if source_key in seen_sources:
+            continue
+
+        seen_sources.add(
+            source_key
+        )
+
+        unique_sources.append(
+            {
+                "number":
+                    len(unique_sources) + 1,
+
+                "source":
+                    result["source"],
+
+                "page":
+                    result["page"],
+
+                "similarity":
+                    result["similarity"],
+
+                "excerpt":
+                    result["text"]
+            }
+        )
+
+        if (
+            len(unique_sources)
+            >= MAX_UNIQUE_SOURCES
+        ):
+            break
+
+
     return {
         "context": context,
-        "sources": sources
+        "sources": unique_sources
     }
